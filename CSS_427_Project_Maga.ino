@@ -40,8 +40,8 @@ void setup() {
 }
 void loop() {
   //read and set data
-  data.VR1x_pos = map(analogRead(VR1x), 0, 1023, 0, 255);
-  data.VR1y_pos = map(analogRead(VR1y), 0, 1023, 0, 255);
+  data.VR1x_pos = map(analogRead(VR1x), 0, 1023, 0, 180);
+  data.VR1y_pos = map(analogRead(VR1y), 0, 1023, 0, 180);
   data.VR1sw_val = digitalRead(VR1sw);
   
   radio.write(&data, sizeof(DATA_Package));
