@@ -30,9 +30,9 @@ void setup() {
   radio.stopListening();  //do this before calling write()
 
   //initialise data
-  data.VR1x_pos = 90;
-  data.VR1y_pos = 90;
-  data.VR1sw_val = 1;
+  data.VR1x_pos = 0;
+  data.VR1y_pos = 0;
+  data.VR1sw_val = 0;
 
   //pinMode
   pinMode(VR1sw, INPUT);
