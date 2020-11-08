@@ -35,6 +35,7 @@ void setup() {
   radio.startListening(); //do this before calling read()
 
   leftAileron.attach(leftAileronPin);
+  leftAileron.write(90);
 }
 
 void loop() {
