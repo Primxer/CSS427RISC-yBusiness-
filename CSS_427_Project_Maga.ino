@@ -1,17 +1,17 @@
 #include <SPI.h>
-#include <nRF24L01.h>
-#include <RF24.h>
+#include "nRF24L01.h"
+#include "RF24.h"
 
-#define VR1x A14 //Joystick 1 x axis
-#define VR1y A15 //Joystick 1 y axis
-#define VR1sw 53 //Joystick 1 button
+static int VR1x = A0;
+static int VR1y = A1; //Joystick 1 y axis
+static int VR1sw = 22; //Joystick 1 button
 
-const bool TEST_MODE = true; // will print out data to serial monitor
+const bool TEST_MODE = true;// will print out data to serial monitor
 
 struct DATA_Package {
   byte VR1x_pos;
   byte VR1y_pos;
-  bool VR1sw_val;
+  byte VR1sw_val;
 };
 DATA_Package data;  //data is the package that will be sent via RF24
 
@@ -35,7 +35,9 @@ void setup() {
   data.VR1sw_val = 0;
 
   //pinMode
-  pinMode(VR1sw, INPUT);
+  pinMode(VR1x, INPUT);
+  pinMode(VR1y, INPUT);
+  pinMode(VR1sw, INPUT_PULLUP);
   
 }
 void loop() {
