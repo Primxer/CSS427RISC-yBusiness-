@@ -13,7 +13,6 @@ unsigned long currentTime = 0;
 const bool TEST_MODE = true; // will print out data to serial monitor
 const int LOST_CONNECTION_TIME = 1000; // last connected is over 1sec
 
-
 Servo leftAileron; 
 Servo rightAileron;
 Servo elevator;
