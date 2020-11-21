@@ -2,6 +2,8 @@
 #include "nRF24L01.h"
 #include "RF24.h"
 #include <Servo.h>
+#include <Wire.h>
+#include <Adafruit_MPL3115A2.h>
 
 #define leftAileronPin 2//left aileron servo pin
 #define rightAileronPin 4 //right aileron servo pin
@@ -10,12 +12,15 @@
 unsigned long lastReceiveTime = 0;
 unsigned long currentTime = 0;
 
-const bool TEST_MODE = true; // will print out data to serial monitor
+const bool TEST_MODE = false; // will print out data to serial monitor
 const int LOST_CONNECTION_TIME = 1000; // last connected is over 1sec
+
 
 Servo leftAileron; 
 Servo rightAileron;
 Servo elevator;
+
+Adafruit_MPL3115A2 baro = Adafruit_MPL3115A2();
 
 RF24 radio(7, 8); // CE, CSN
 const byte address[6] = "00001";
@@ -25,6 +30,7 @@ struct DATA_Package {
   byte VR1y_pos;
   byte VR1sw_val;
 };
+
 DATA_Package data;  //data is the package that will be read into via RF24
 
 void setup() {
@@ -32,6 +38,10 @@ void setup() {
     Serial.begin(9600);
   }
 
+  Serial.begin(9600);
+  if(!baro.begin()) {
+  }
+  
   //setup radio
   radio.begin();
   radio.openReadingPipe(0, address);
@@ -58,6 +68,12 @@ void loop() {
       print_data();
     }
   }
+
+  float altm = baro.getAltitude();
+  Serial.print(altm); Serial.println(" meters");
+
+  float tempC = baro.getTemperature();
+  Serial.print(tempC); Serial.println("*C");
   
   currentTime = millis();
   if ( currentTime - lastReceiveTime > LOST_CONNECTION_TIME ){
