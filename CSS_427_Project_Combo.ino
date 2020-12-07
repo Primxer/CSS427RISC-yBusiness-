@@ -1,24 +1,12 @@
+//ARDUINO UNO CODE
+
+#if defined (ARDUINO_AVR_UNO)
 #include <SPI.h>
 #include "nRF24L01.h"
 #include "RF24.h"
 #include <Servo.h>
 #include <Wire.h>
 #include <Adafruit_MPL3115A2.h>
-
-struct DATA_Package {
-  byte VR1x1_pos;
-  byte VR1x2_pos;
-  byte VR1y_pos;
-  byte VR2y_pos;
-  byte VR2x_pos;
-  byte VR1sw_val;
-  bool altRequest;
-  bool tempCRequest;
-};
-
-//ARDUINO UNO CODE
-
-#if defined (ARDUINO_AVR_UNO)
 
 #define leftAileronPin 2//left aileron servo pin
 #define rightAileronPin 4 //right aileron servo pin
@@ -30,10 +18,22 @@ struct DATA_Package {
 #define rudderStart 80
 #define elevatorStart 90
 
+struct DATA_Package {
+  byte VR1x1_pos;
+  byte VR1x2_pos;
+  byte VR1y_pos;
+  byte VR2y_pos;
+  byte VR2x_pos;
+  byte VR1sw_val;
+  bool altRequest;
+};
+
 unsigned long lastReceiveTime = 0;
 unsigned long currentTime = 0;
 
 const int LOST_CONNECTION_TIME = 1000; // last connected is over 1sec
+bool localAltRequest = false;
+
 
 Servo leftAileron; 
 Servo rightAileron;
@@ -81,11 +81,11 @@ void loop() {
       radio.read(&data, sizeof(DATA_Package));
     }
     
-    elevator.write(data.VR1y_pos);
-    leftAileron.write(data.VR1x1_pos);
-    rightAileron.write(data.VR1x2_pos);
-    rudder.write(data.VR2x_pos); 
-    ESC.write(data.VR2y_pos);
+    //elevator.write(data.VR1y_pos);
+    //leftAileron.write(data.VR1x1_pos);
+    //rightAileron.write(data.VR1x2_pos);
+    //rudder.write(data.VR2x_pos); 
+    //ESC.write(data.VR2y_pos);
 
     lastReceiveTime = millis();
   }
@@ -94,22 +94,22 @@ void loop() {
   //Send Radio Transmission
   radio.stopListening();
   if(data.altRequest) {
-      int altitude = baro.getAltitude();
-      radio.write(&altitude, sizeof(altitude));
-      Serial.println(altitude);
-      Serial.println("sent alt");
-  }
-  if(data.tempCRequest) {
-    int tempC = baro.getTemperature();
-    radio.write(&tempC, sizeof(tempC));
-    Serial.print(tempC);
-    Serial.println("sent tempC");
+    float altitude = baro.getAltitude();
+    radio.writeFast(&altitude, sizeof(altitude));
+    Serial.println("sent alt");
   }
   
   currentTime = millis();
   if ( currentTime - lastReceiveTime > LOST_CONNECTION_TIME ){
     lostConnection();
   }
+  print_data();
+}
+
+void print_data() {
+  Serial.print(data.VR1y_pos);
+  Serial.print(", ");
+  Serial.println(data.VR1x1_pos);
 }
 
 void lostConnection(){
@@ -120,6 +120,22 @@ void lostConnection(){
 //ARDUINO MEGA CODE
 
 #if defined(__AVR_ATmega2560__)
+#include <SPI.h>
+#include "nRF24L01.h"
+#include "RF24.h"
+#include <Servo.h>
+#include <Wire.h>
+#include <Adafruit_MPL3115A2.h>
+
+struct DATA_Package {
+  byte VR1x1_pos;
+  byte VR1x2_pos;
+  byte VR1y_pos;
+  byte VR2y_pos;
+  byte VR2x_pos;
+  byte VR1sw_val;
+  bool altRequest;
+};
 
 static int VR1x = A0;
 static int VR1y = A1; //Joystick 1 y axis
@@ -140,6 +156,7 @@ DATA_Package data;  //data is the package that will be sent via RF24
 
 RF24 radio(49, 48); // CE, CSN
 const byte addresses [][6] = {"00001", "00002"};
+char ackMessage[] = "Data Request ";
 
 void setup() { 
   Serial.begin(9600);
@@ -156,7 +173,6 @@ void setup() {
   data.VR1y_pos = 0;
   data.VR1sw_val = 0;
   data.altRequest = false;
-  data.tempCRequest = false;
 
   //pinMode
   pinMode(VR1x, INPUT);
@@ -182,7 +198,6 @@ void loop() {
 
   if(Serial.read()== 'y' && !sampleType) {
     data.altRequest = true;
-    data.tempCRequest = true;
   }
 
   //Read Input
@@ -210,20 +225,20 @@ void loop() {
       data.altRequest = false;
       Serial.print(altitude); Serial.println(" meters");
     }
-    if(data.tempCRequest) {
-      radio.read(&tempC, sizeof(tempC));
-      data.tempCRequest = false;
-      Serial.println(tempC);
-    }
-
     lastReceiveTime = millis();
   }
   //End Read Radio Transmission
-
+  print_data();
   currentTime = millis();
   if ( currentTime - lastReceiveTime > LOST_CONNECTION_TIME ){
     lostConnection();
   }
+}
+
+void print_data() {
+  Serial.print(data.VR1y_pos);
+  Serial.print(", ");
+  Serial.println(data.VR1x1_pos);
 }
 
 void lostConnection() {
