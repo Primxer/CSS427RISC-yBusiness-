@@ -13,9 +13,9 @@
 #define elevatorPin 3 //elevator servo pin
 #define rudderPin 5
 #define ESCPin 6
-#define leftAileronStart 60
-#define rightAileronStart 66
-#define rudderStart 80
+#define leftAileronStart 90
+#define rightAileronStart 90
+#define rudderStart 90
 #define elevatorStart 90
 
 struct DATA_Package {
@@ -72,6 +72,7 @@ void setup() {
   elevator.write(elevatorStart);
   leftAileron.write(leftAileronStart);
   rightAileron.write(rightAileronStart);
+  
 }
 
 void loop() {
@@ -200,7 +201,7 @@ void setup() {
 
   //User request for manual or periodic sample rate
   Serial.println("Which sample type? 1 = manual, 0 = periodic");
-  while(Serial.available() == 0) {}
+  //while(Serial.available() == 0) {}
   char input = Serial.read();
   if(input == '0') {
     sampleType = true;
@@ -234,11 +235,11 @@ void loop() {
 
   //Read Input
   float xIn = analogRead(VR1x);
-  data.VR1x1_pos = map(xIn, 0, 1023, 100, 40);
-  data.VR1x2_pos = map(xIn, 0, 1023, 90, 40);
+  data.VR1x1_pos = map(xIn, 0, 1023, 155, 45);
+  data.VR1x2_pos = map(xIn, 0, 1023, 155, 40);
   data.VR1y_pos = map(analogRead(VR1y), 0, 1023, 55, 125);
-  data.VR2x_pos = map(analogRead(VR2x), 0, 1023, 57, 103);
-  data.VR2y_pos = map(constrain(analogRead(VR2y), 512, 1023), 512, 1023, 0, 180);
+  data.VR2x_pos = map(analogRead(VR2x), 0, 1023, 45, 135);
+  data.VR2y_pos = map(constrain(analogRead(VR2y), 512, 1023), 512, 1023, 0, 90);
 
   //Send Radio Transmission
   delay(2);
@@ -273,6 +274,8 @@ void loop() {
   }
   //End Read Radio Transmission
 
+  print_data();
+  
   //Check if radio has lost signal
   currentTime = millis();
   
