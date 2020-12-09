@@ -3,10 +3,13 @@
 #if defined (ARDUINO_AVR_UNO)
 #include <SPI.h>
 #include "nRF24L01.h"
+#include "I2Cdev.h"
+#include "MPU6050_6Axis_MotionApps20.h"
 #include "RF24.h"
 #include <Servo.h>
 #include <Wire.h>
 #include <Adafruit_MPL3115A2.h>
+#include <Math.h>
 
 #define leftAileronPin 9//left aileron servo pin
 #define rightAileronPin 4 //right aileron servo pin
@@ -18,6 +21,7 @@
 #define rightAileronStart 90
 #define rudderStart 90
 #define elevatorStart 90
+#define batPin A2
 
 struct DATA_Package {
   byte VR1x1_pos;
@@ -28,6 +32,8 @@ struct DATA_Package {
   byte VR1sw_val;
   bool altRequest;
   bool tempRequest;
+  bool MPURequest;
+  bool batteryRequest;
 };
 
 unsigned long lastReceiveTime = 0;
@@ -45,12 +51,38 @@ Servo ESC;
 
 Adafruit_MPL3115A2 baro = Adafruit_MPL3115A2();
 
+
+MPU6050 mpu;
+// MPU control/status vars
+bool dmpReady = false;  // set true if DMP init was successful
+uint8_t mpuIntStatus;   // holds actual interrupt status byte from MPU
+uint8_t devStatus;      // return status after each device operation (0 = success, !0 = error)
+uint16_t packetSize;    // expected DMP packet size (default is 42 bytes)
+uint16_t fifoCount;     // count of all bytes currently in FIFO
+uint8_t fifoBuffer[64]; // FIFO storage buffer
+// orientation/motion vars
+Quaternion q;           // [w, x, y, z]         quaternion container
+VectorInt16 aa;         // [x, y, z]            accel sensor measurements
+VectorInt16 aaReal;     // [x, y, z]            gravity-free accel sensor measurements
+VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measurements
+VectorFloat gravity;    // [x, y, z]            gravity vector
+float euler[3];         // [psi, theta, phi]    Euler angle container
+float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
+
+volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin has gone high
+void dmpDataReady() {
+  mpuInterrupt = true;
+}
+
+
 RF24 radio(7, 8); // CE, CSN
 const byte addresses [][6] = {"00001", "00002"};
 
 DATA_Package data;  //data is the package that will be read into via RF24
 
 void setup() {
+  Wire.begin();
+  
   if(!baro.begin()) { //start the baromiter for altitude and tempurature 
   }
 
@@ -72,6 +104,41 @@ void setup() {
   elevator.write(elevatorStart);
   leftAileron.write(leftAileronStart);
   rightAileron.write(rightAileronStart);
+  
+  mpu.initialize();
+  devStatus = mpu.dmpInitialize();
+  // supply your own gyro offsets here, scaled for min sensitivity
+  mpu.setXGyroOffset(355);
+  mpu.setYGyroOffset(-90);
+  mpu.setZGyroOffset(0);
+  mpu.setZAccelOffset(8810); // 1688 factory default for my test chip
+  
+  // make sure it worked (returns 0 if so)
+  if (devStatus == 0) {
+    // turn on the DMP, now that it's ready
+    //Serial.println(F("Enabling DMP..."));
+    mpu.setDMPEnabled(true);
+
+    // enable Arduino interrupt detection
+    //Serial.println(F("Enabling interrupt detection (Arduino external interrupt 0)..."));
+    attachInterrupt(0, dmpDataReady, RISING);
+    mpuIntStatus = mpu.getIntStatus();
+
+    // set our DMP Ready flag so the main loop() function knows it's okay to use it
+    //Serial.println(F("DMP ready! Waiting for first interrupt..."));
+    dmpReady = true;
+
+    // get expected DMP packet size for later comparison
+    packetSize = mpu.dmpGetFIFOPacketSize();
+  } else {
+    // ERROR!
+    // 1 = initial memory load failed
+    // 2 = DMP configuration updates failed
+    // (if it's going to break, usually the code will be 1)
+    //Serial.print(F("DMP Initialization failed (code "));
+    Serial.print(devStatus);
+    Serial.println(F(")"));
+  }
 }
 
 void loop() {
@@ -95,7 +162,7 @@ void loop() {
 
   //Send Radio Transmission
   radio.stopListening();
-  if(data.altRequest || data.tempRequest) { //THIS WILL NEED TO CHECK ALL SENSORS WITH || TO SEND DATA REQUEST ACK
+  if(data.altRequest || data.tempRequest|| data.MPURequest || data.batteryRequest) { //THIS WILL NEED TO CHECK ALL SENSORS WITH || TO SEND DATA REQUEST ACK
     char ackMessage[8] = "DRA";
     radio.write(&ackMessage, sizeof(ackMessage));
     Serial.println(ackMessage);
@@ -103,7 +170,7 @@ void loop() {
 
   //Check each sensor for request KEEP CHECKS IN ORDER BETWEEN LEADER/FOLLOWER
   if(data.altRequest) {
-    float altitude = 0.123;
+    short altitude = (short)round(baro.getAltitude());
     radio.write(&altitude, sizeof(altitude));
     Serial.println("alt sent");
   }
@@ -112,9 +179,63 @@ void loop() {
     int reading = analogRead(TMP36Pin);
     float voltage = reading * 5.0;
     voltage /= 1024.0;
-    float tempC = (voltage - 0.5) * 100;
+    byte tempC = (byte) round((voltage - 0.5) * 100);
     radio.write(&tempC, sizeof(tempC));
     Serial.println("tempC sent");
+  }
+  
+  if(data.MPURequest) {
+    // if programming failed, don't try to do anything
+    if (!dmpReady) return;
+
+    // wait for MPU interrupt or extra packet(s) available
+    while (!mpuInterrupt && fifoCount < packetSize) {
+    }
+
+    // reset interrupt flag and get INT_STATUS byte
+    mpuInterrupt = false;
+    mpuIntStatus = mpu.getIntStatus();
+
+    // get current FIFO count
+    fifoCount = mpu.getFIFOCount();
+
+    // check for overflow (this should never happen unless our code is too inefficient)
+    if ((mpuIntStatus & 0x10) || fifoCount == 1024) {
+      // reset so we can continue cleanly
+      mpu.resetFIFO();
+      //Serial.println(F("FIFO overflow!"));
+
+      // otherwise, check for DMP data ready interrupt (this should happen frequently)
+    } else if (mpuIntStatus & 0x02) {
+      // wait for correct available data length, should be a VERY short wait
+      while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();
+
+      // read a packet from FIFO
+      mpu.getFIFOBytes(fifoBuffer, packetSize);
+
+      // track FIFO count here in case there is > 1 packet available
+      // (this lets us immediately read more without waiting for an interrupt)
+      fifoCount -= packetSize;
+
+      // display Euler angles in degrees
+      mpu.dmpGetQuaternion(&q, fifoBuffer);
+      mpu.dmpGetGravity(&gravity, &q);
+      mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+
+      short yaw = (short)round(ypr[0] * 180 / M_PI);
+      short roll = (short)round(ypr[1] * 180 / M_PI);
+      short pitch = (short)round(ypr[2] * 180 / M_PI);
+      
+      radio.write(&yaw, sizeof(yaw));
+      radio.write(&roll, sizeof(roll));
+      radio.write(&pitch, sizeof(pitch));
+      //Serial.println("MPU data sent");
+  }
+    
+  if(data.batteryRequest) {
+    byte battPercent = (byte)map(analogRead(batPin), 622, 792, 0, 100);
+    radio.write(&battPercent, sizeof(battPercent));
+    Serial.println("Battery Percent sent");
   }
 
   //ADD OTHER SENSOR LOGIC HERE
@@ -139,7 +260,10 @@ void lostConnection(){
 }
 #endif
 
-//ARDUINO MEGA CODE
+
+// ================================================================
+// ===               ARDUINO MEGA CODE                          ===
+// ================================================================
 
 #if defined(__AVR_ATmega2560__)
 #include <SPI.h>
@@ -148,6 +272,9 @@ void lostConnection(){
 #include <Servo.h>
 #include <Wire.h>
 #include <Adafruit_MPL3115A2.h>
+#include <Adafruit_RGBLCDShield.h>
+#include <utility/Adafruit_MCP23017.h>
+#include <Math.h>
 
 struct DATA_Package {
   byte VR1x1_pos;
@@ -158,6 +285,8 @@ struct DATA_Package {
   byte VR1sw_val;
   bool altRequest;
   bool tempRequest;
+  bool MPURequest;
+  bool batteryRequest;
 };
 
 static int VR1x = A0;
@@ -179,18 +308,28 @@ long int terminalCount = 0;
 long int leaderToFollowerCount = 0;
 long int followerToLeaderCount = 0;
 
-volatile float altitude = 0;
-volatile float tempC = 0;
+volatile short altitude = 0;
+volatile byte tempC = 0;
 volatile int maxThrottle = 100;
+volatile short yaw = 0;
+volatile short pitch = 0;
+volatile short roll = 0;
+volatile byte batteryLevel = 0;
 
 DATA_Package data;  //data is the package that will be sent via RF24
 
+Adafruit_RGBLCDShield lcd = Adafruit_RGBLCDShield();
+  
 RF24 radio(49, 48); // CE, CSN
 const byte addresses [][6] = {"00001", "00002"};
 
 void setup() { 
   Serial.begin(9600);
+  Wire.begin();
   
+  // set up the LCD's number of columns and rows:
+  lcd.begin(16, 2);
+    
   //setup radio
   radio.begin();
   radio.openWritingPipe(addresses[1]);
@@ -278,7 +417,10 @@ void loop() {
       if(altitude != 0) {
         data.altRequest = false;
         followerToLeaderCount += 1;
-        Serial.print(altitude); Serial.println(" meters");
+        String printAlt = String(altitude) + " M     ";
+        Serial.println(printAlt);
+        lcd.setCursor(0, 1);
+        lcd.print(printAlt);
       }
     }
 
@@ -287,7 +429,36 @@ void loop() {
       if(tempC != 0) {
         data.tempRequest = false;
         followerToLeaderCount += 1;
-        Serial.print(tempC); Serial.println(" Degrees C");
+        String printTemp = String(tempC) + " C  ";
+        Serial.print(printTemp);
+        lcd.setCursor(7,1);
+        lcd.print(printTemp);
+      }
+    }
+    
+    if(data.MPURequest) {
+      radio.read(&yaw, sizeof(yaw));
+      radio.read(&pitch, sizeof(pitch));
+      radio.read(&roll, sizeof(roll));
+      
+      data.MPURequest = false;
+      followerToLeaderCount += 3;
+      String printYPR = "YPR " + String(yaw) + " " + String(pitch) + " " + String(roll) + "     ";
+      Serial.println(printYPR);
+      lcd.setCursor(0, 0);
+      lcd.print(printYPR);
+      }
+    }
+  
+    if(data.batteryRequest) {
+      radio.read(&batteryLevel, sizeof(batteryLevel));
+      if(tempC != 0) {
+        data.tempRequest = false;
+        followerToLeaderCount += 1;
+        String printBatt = String(batteryLevel) + "%";
+        Serial.println(printBatt);
+        lcd.setCursor(14,1);
+        lcd.print(printBatt);
       }
     }
 
