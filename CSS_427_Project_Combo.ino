@@ -8,11 +8,12 @@
 #include <Wire.h>
 #include <Adafruit_MPL3115A2.h>
 
-#define leftAileronPin 2//left aileron servo pin
+#define leftAileronPin 9//left aileron servo pin
 #define rightAileronPin 4 //right aileron servo pin
 #define elevatorPin 3 //elevator servo pin
 #define rudderPin 5
 #define ESCPin 6
+#define TMP36Pin A0
 #define leftAileronStart 90
 #define rightAileronStart 90
 #define rudderStart 90
@@ -26,6 +27,7 @@ struct DATA_Package {
   byte VR2x_pos;
   byte VR1sw_val;
   bool altRequest;
+  bool tempRequest;
 };
 
 unsigned long lastReceiveTime = 0;
@@ -59,8 +61,6 @@ void setup() {
   radio.openWritingPipe(addresses[0]);
   radio.openReadingPipe(1, addresses[1]);
   radio.setPALevel(RF24_PA_MIN);
-  radio.setAutoAck(1);
-  radio.enableAckPayload();
   
   leftAileron.attach(leftAileronPin);
   rightAileron.attach(rightAileronPin);
@@ -72,16 +72,16 @@ void setup() {
   elevator.write(elevatorStart);
   leftAileron.write(leftAileronStart);
   rightAileron.write(rightAileronStart);
-  
 }
 
 void loop() {
   //Read Radio transmission
-  delay(2);
+  delay(5);
   radio.startListening();
   if (radio.available()) {
-    radio.read(&data, sizeof(DATA_Package));
-
+    while(radio.available()) {
+      radio.read(&data, sizeof(DATA_Package));
+    }
     //Write to all the servos 
     elevator.write(data.VR1y_pos);
     leftAileron.write(data.VR1x1_pos);
@@ -91,23 +91,35 @@ void loop() {
 
     lastReceiveTime = millis();
   }
-  delay(2);
+  delay(5);
 
   //Send Radio Transmission
   radio.stopListening();
-  if(data.altRequest) { //THIS WILL NEED TO CHECK ALL SENSORS WITH || TO SEND DATA REQUEST ACK
-    char ackMessage[20] = "Data Request ACK";
+  if(data.altRequest || data.tempRequest) { //THIS WILL NEED TO CHECK ALL SENSORS WITH || TO SEND DATA REQUEST ACK
+    char ackMessage[8] = "DRA";
     radio.write(&ackMessage, sizeof(ackMessage));
-  }
+    Serial.println(ackMessage);
+  } 
 
   //Check each sensor for request KEEP CHECKS IN ORDER BETWEEN LEADER/FOLLOWER
   if(data.altRequest) {
-    //float altitude = baro.getAltitude();
-    //radio.write(&altitude, sizeof(altitude));
+    float altitude = 0.123;
+    radio.write(&altitude, sizeof(altitude));
+    Serial.println("alt sent");
+  }
+
+  if(data.tempRequest) {
+    int reading = analogRead(TMP36Pin);
+    float voltage = reading * 5.0;
+    voltage /= 1024.0;
+    float tempC = (voltage - 0.5) * 100;
+    radio.write(&tempC, sizeof(tempC));
+    Serial.println("tempC sent");
   }
 
   //ADD OTHER SENSOR LOGIC HERE
 
+  radio.flush_tx();
 
   //Check if radio lost signal
   currentTime = millis();
@@ -145,6 +157,7 @@ struct DATA_Package {
   byte VR2x_pos;
   byte VR1sw_val;
   bool altRequest;
+  bool tempRequest;
 };
 
 static int VR1x = A0;
@@ -166,8 +179,9 @@ long int terminalCount = 0;
 long int leaderToFollowerCount = 0;
 long int followerToLeaderCount = 0;
 
-int altitude = 0;
-int tempC = 0;
+volatile float altitude = 0;
+volatile float tempC = 0;
+volatile int maxThrottle = 100;
 
 DATA_Package data;  //data is the package that will be sent via RF24
 
@@ -182,8 +196,6 @@ void setup() {
   radio.openWritingPipe(addresses[1]);
   radio.openReadingPipe(1, addresses[0]);
   radio.setPALevel(RF24_PA_MIN);
-  radio.setAutoAck(1);
-  radio.enableAckPayload();
 
   //initialise data
   data.VR1x1_pos = 0;
@@ -201,7 +213,7 @@ void setup() {
 
   //User request for manual or periodic sample rate
   Serial.println("Which sample type? 1 = manual, 0 = periodic");
-  //while(Serial.available() == 0) {}
+  while(Serial.available() == 0) {}
   char input = Serial.read();
   if(input == '0') {
     sampleType = true;
@@ -228,6 +240,7 @@ void loop() {
   //IF user input y and manual sample then send data request for ALL sensors 
   if(Serial.read()== 'y' && !sampleType) {
     data.altRequest = true;
+    data.tempRequest = true;
     Serial.println("Data Request Sent");
     terminalCount+=1;
     Serial.print("Terminal Input Count: "); Serial.println(terminalCount);
@@ -242,19 +255,18 @@ void loop() {
   data.VR2y_pos = map(constrain(analogRead(VR2y), 512, 1023), 512, 1023, 0, 90);
 
   //Send Radio Transmission
-  delay(2);
+  delay(5);
   radio.stopListening();
   radio.write(&data, sizeof(DATA_Package));
   leaderToFollowerCount += 1;
-  delay(2);
+  delay(5);
   //End Send Radio Transmission
 
   //Read Radio Transmission
   radio.startListening();
   if(radio.available()) {
     //Collect ACK message if exists
-    radio.read(&data, sizeof(data));
-    char ackMessage[20] = "a";
+    char ackMessage[8] = "a";
     radio.read(&ackMessage, sizeof(ackMessage));
     Serial.println(ackMessage);
     followerToLeaderCount += 1;
@@ -262,19 +274,28 @@ void loop() {
 
     //Reset all sensor requests and read sensor data from follower KEEP RESETS IN ORDER BETWEEN LEADER/FOLLOWER
     if(data.altRequest) {
-      //radio.read(&altitude, sizeof(altitude));
-      data.altRequest = false;
-      followerToLeaderCount += 1;
-      //Serial.print(altitude); Serial.println(" meters");
+      radio.read(&altitude, sizeof(altitude));
+      if(altitude != 0) {
+        data.altRequest = false;
+        followerToLeaderCount += 1;
+        Serial.print(altitude); Serial.println(" meters");
+      }
+    }
+
+    if(data.tempRequest) {
+      radio.read(&tempC, sizeof(tempC));
+      if(tempC != 0) {
+        data.tempRequest = false;
+        followerToLeaderCount += 1;
+        Serial.print(tempC); Serial.println(" Degrees C");
+      }
     }
 
     //ADD SENSOR LOGIC HERE
-    
+    radio.flush_rx();
     lastReceiveTime = millis();
   }
   //End Read Radio Transmission
-
-  print_data();
   
   //Check if radio has lost signal
   currentTime = millis();
@@ -290,6 +311,12 @@ void loop() {
       data.altRequest = true;
       lastAltTime = millis();
     }
+  }
+
+  if(tempC > 30) {
+    maxThrottle = 60;
+  } else {
+    maxThrottle = 90;
   }
 }
 
