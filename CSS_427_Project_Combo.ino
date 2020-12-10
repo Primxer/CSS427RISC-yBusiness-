@@ -231,6 +231,58 @@ void print_data() {
 }
 
 void lostConnection() {
+  while (!radio.available()){
+    // if programming failed, don't try to do anything
+    //if (!dmpReady) return;
+
+    // wait for MPU interrupt or extra packet(s) available
+    while (!mpuInterrupt && fifoCount < packetSize) {
+    }
+
+    // reset interrupt flag and get INT_STATUS byte
+    mpuInterrupt = false;
+    mpuIntStatus = mpu.getIntStatus();
+
+    // get current FIFO count
+    fifoCount = mpu.getFIFOCount();
+
+    // check for overflow (this should never happen unless our code is too inefficient)
+    if ((mpuIntStatus & 0x10) || fifoCount == 1024) {
+      // reset so we can continue cleanly
+      mpu.resetFIFO();
+      //Serial.println(F("FIFO overflow!"));
+
+      // otherwise, check for DMP data ready interrupt (this should happen frequently)
+    } else if (mpuIntStatus & 0x02) {
+      // wait for correct available data length, should be a VERY short wait
+      while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();
+
+      // read a packet from FIFO
+      mpu.getFIFOBytes(fifoBuffer, packetSize);
+
+      // track FIFO count here in case there is > 1 packet available
+      // (this lets us immediately read more without waiting for an interrupt)
+      fifoCount -= packetSize;
+
+      // display Euler angles in degrees
+      mpu.dmpGetQuaternion(&q, fifoBuffer);
+      mpu.dmpGetGravity(&gravity, &q);
+      mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+
+      data.yaw = (short)round(ypr[0] * 180 / M_PI);
+      data.roll = (short)round(ypr[1] * 180 / M_PI);
+      data.pitch = (short)round(ypr[2] * 180 / M_PI);
+      
+      int level_yaw_rudder = map(constrain(yaw, -90, 90), -90, 90, 45, 135); //yaw true range is -180 to 180. contrain down to increase sens
+      int level_roll_aileron = map(roll, -90, 90, 155, 45);
+      int level_pitch_aileron = map(pitch, -90, 90, 55, 125);
+      
+      elevator.write(level_pitch_aileron);
+      leftAileron.write(level_roll_aileron);
+      rightAileron.write(level_roll_aileron);
+      rudder.write(level_yaw_rudder);
+      ESC.write(0);
+  }
   return;
 }
 #endif
@@ -474,6 +526,10 @@ void print_data() {
 }
 
 void lostConnection() {
+  while (!radio.available()){
+    lcd.setCursor(0, 0);
+    lcd.print("No Connection");
+  }
   return;
 }
 #endif
