@@ -24,10 +24,11 @@
 #define batPin A2
 
 struct DATA_Package {
-  byte tempC = 0;
   short yaw = 0;
   short pitch = 0;
   short roll = 0;
+  short altitude;
+  byte tempC = 0;
   byte VR1x1_pos;
   byte VR1y_pos;
   byte VR2y_pos;
@@ -92,7 +93,7 @@ void setup() {
   radio.begin();
   radio.openWritingPipe(addresses[0]);
   radio.openReadingPipe(1, addresses[1]);
-  radio.setPALevel(RF24_PA_MIN);
+  radio.setPALevel(RF24_PA_LOW);
 
   leftAileron.attach(leftAileronPin);
   rightAileron.attach(rightAileronPin);
@@ -215,6 +216,8 @@ void loop() {
 
   data.batteryLevel = (byte)map(analogRead(batPin), 622, 792, 0, 100);
 
+  //data.altitude = baro.getAltitude();
+
   radio.write(&data, sizeof(data));
 
   //Check if radio lost signal
@@ -231,58 +234,6 @@ void print_data() {
 }
 
 void lostConnection() {
-  while (!radio.available()){
-    // if programming failed, don't try to do anything
-    //if (!dmpReady) return;
-
-    // wait for MPU interrupt or extra packet(s) available
-    while (!mpuInterrupt && fifoCount < packetSize) {
-    }
-
-    // reset interrupt flag and get INT_STATUS byte
-    mpuInterrupt = false;
-    mpuIntStatus = mpu.getIntStatus();
-
-    // get current FIFO count
-    fifoCount = mpu.getFIFOCount();
-
-    // check for overflow (this should never happen unless our code is too inefficient)
-    if ((mpuIntStatus & 0x10) || fifoCount == 1024) {
-      // reset so we can continue cleanly
-      mpu.resetFIFO();
-      //Serial.println(F("FIFO overflow!"));
-
-      // otherwise, check for DMP data ready interrupt (this should happen frequently)
-    } else if (mpuIntStatus & 0x02) {
-      // wait for correct available data length, should be a VERY short wait
-      while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();
-
-      // read a packet from FIFO
-      mpu.getFIFOBytes(fifoBuffer, packetSize);
-
-      // track FIFO count here in case there is > 1 packet available
-      // (this lets us immediately read more without waiting for an interrupt)
-      fifoCount -= packetSize;
-
-      // display Euler angles in degrees
-      mpu.dmpGetQuaternion(&q, fifoBuffer);
-      mpu.dmpGetGravity(&gravity, &q);
-      mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
-
-      data.yaw = (short)round(ypr[0] * 180 / M_PI);
-      data.roll = (short)round(ypr[1] * 180 / M_PI);
-      data.pitch = (short)round(ypr[2] * 180 / M_PI);
-      
-      int level_yaw_rudder = map(constrain(yaw, -90, 90), -90, 90, 45, 135); //yaw true range is -180 to 180. contrain down to increase sens
-      int level_roll_aileron = map(roll, -90, 90, 155, 45);
-      int level_pitch_aileron = map(pitch, -90, 90, 55, 125);
-      
-      elevator.write(level_pitch_aileron);
-      leftAileron.write(level_roll_aileron);
-      rightAileron.write(level_roll_aileron);
-      rudder.write(level_yaw_rudder);
-      ESC.write(0);
-  }
   return;
 }
 #endif
@@ -304,10 +255,11 @@ void lostConnection() {
 #include <Math.h>
 
 struct DATA_Package {
-  byte tempC = 0;
   short yaw = 0;
   short pitch = 0;
   short roll = 0;
+  short altitude;
+  byte tempC = 0;
   byte VR1x1_pos;
   byte VR1y_pos;
   byte VR2y_pos;
@@ -320,6 +272,7 @@ bool autoLevelOn = false;
 bool MPURequest = false;
 bool batteryRequest = false;
 bool tempRequest = false;
+bool altitudeRequest = false;
 
 static int VR1x = A0;
 static int VR1y = A1; //Joystick 1 y axis
@@ -335,9 +288,12 @@ bool sampleType = false;
 int MPUSampleRate = 0;
 int batterySampleRate = 0;
 int tempSampleRate = 0;
+int altitudeSampleRate = 0;
+
 unsigned long lastTempTime = 0;
 unsigned long lastMPUTime = 0;
 unsigned long lastBatteryTime = 0;
+unsigned long lastAltitudeTime = 0;
 unsigned long lastReceiveTime = 0;
 unsigned long currentTime = 0;
 
@@ -365,7 +321,7 @@ void setup() {
   radio.begin();
   radio.openWritingPipe(addresses[1]);
   radio.openReadingPipe(1, addresses[0]);
-  radio.setPALevel(RF24_PA_MIN);
+  radio.setPALevel(RF24_PA_LOW);
 
   //initialise data
   data.VR1x1_pos = 0;
@@ -387,21 +343,28 @@ void setup() {
     sampleType = true;
     Serial.flush();
     Serial.read();
-    Serial.println("Enter Sampling Rate for temperature sensor (microseconds)");
+    Serial.println("Enter Sampling Rate for Temperature sensor (microseconds)");
     Serial.flush();
     Serial.read();
     while (Serial.available() == 0) {}
     tempSampleRate = Serial.parseInt();
-    Serial.println("Enter Sampling Rate for MPU sensor (microseconds)");
+    Serial.println("Enter Sampling Rate for Gyroscope sensor (microseconds)");
     Serial.flush();
     Serial.read();
     while (Serial.available() == 0) {}
     MPUSampleRate = Serial.parseInt();
-    Serial.println("Enter Sampling Rate for battery sensor (microseconds)");
+    Serial.println("Enter Sampling Rate for Battery Percentage sensor (microseconds)");
     Serial.flush();
     Serial.read();
     while (Serial.available() == 0) {}
     batterySampleRate = Serial.parseInt();
+    Serial.println("Enter Sampling Rate for Altitude sensor (microseconds)");
+    Serial.flush();
+    Serial.read();
+    while (Serial.available() == 0) {}
+    altitudeSampleRate = Serial.parseInt();
+    Serial.flush();
+    Serial.read();
   } else {
     if (input != '1') {
       Serial.println("Unknown input, defaulting to manual requests...");
@@ -418,6 +381,7 @@ void loop() {
     tempRequest = true;
     MPURequest = true;
     batteryRequest = true;
+    altitudeRequest = true;
     Serial.println("Data Request Sent");
     terminalCount += 1;
     Serial.print("Terminal Input Count: "); Serial.println(terminalCount);
@@ -432,7 +396,7 @@ void loop() {
     data.VR1x1_pos = map(xIn, 0, 1023, 55, 120);
     data.VR1y_pos = map(analogRead(VR1y), 0, 1023, 125, 55);
     data.VR2x_pos = map(analogRead(VR2x), 0, 1023, 45, 100);
-    data.VR2y_pos = map(constrain(analogRead(VR2y), 512, 1023), 512, 1023, 0, 90);
+    data.VR2y_pos = map(constrain(analogRead(VR2y), 512, 1023), 512, 1023, 0, maxThrottle);
   }
   else {
     data.VR2x_pos = map(constrain(data.yaw, -45, 45), -45, 45, 45, 135); //yaw true range is -180 to 180. contrain down to increase sens
@@ -441,14 +405,14 @@ void loop() {
   }
 
   //Send Radio Transmission
-  delay(3);
+  delay(5);
   radio.stopListening();
   radio.write(&data, sizeof(DATA_Package));
   if(radio.isAckPayloadAvailable()) {
     leaderToFollowerCount += 1;
-    Serial.print("Transmission Number: "); Serial.print(leaderToFollowerCount);Serial.println(" Data ACK");
+    //Serial.print("Transmission Number: "); Serial.print(leaderToFollowerCount);Serial.println(" Data ACK");
   }
-  delay(3);
+  delay(5);
   //End Send Radio Transmission
 
   //Read Radio Transmission
@@ -510,9 +474,13 @@ void loop() {
       batteryRequest = true;
       lastBatteryTime = millis();
     }
+    if (currentTime - lastAltitudeTime > altitudeSampleRate) {
+      altitudeRequest = true;
+      lastAltitudeTime = millis();
+    }
   }
 
-  if (data.tempC > 25) {
+  if (data.tempC > 30) {
     maxThrottle = 60;
   } else {
     maxThrottle = 90;
@@ -526,10 +494,6 @@ void print_data() {
 }
 
 void lostConnection() {
-  while (!radio.available()){
-    lcd.setCursor(0, 0);
-    lcd.print("No Connection");
-  }
   return;
 }
 #endif
